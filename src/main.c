@@ -23,6 +23,7 @@ LOG_MODULE_REGISTER(sta, CONFIG_LOG_DEFAULT_LEVEL);
 #include <zephyr/net/wifi_mgmt.h>
 #include <zephyr/net/net_event.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/net/socket.h>
 
 #include <net/wifi_mgmt_ext.h>
 #include <net/wifi_ready.h>
@@ -33,7 +34,13 @@ LOG_MODULE_REGISTER(sta, CONFIG_LOG_DEFAULT_LEVEL);
 
 #include <dk_buttons_and_leds.h>
 
+#include <zephyr/net/dns_sd.h>
+
 #include <zephyr/net/dns_resolve.h>
+#ifdef CONFIG_MDNS_MODE_RESPONDER
+DNS_SD_REGISTER_TCP_SERVICE(krantore_sd, CONFIG_NET_HOSTNAME, "_http", "local",
+			    DNS_SD_EMPTY_TXT, 80);
+#endif /* CONFIG_MDNS_MODE_RESOLVER */
 
 #define DNS_TIMEOUT (10 * MSEC_PER_SEC)
 
@@ -63,6 +70,8 @@ static struct net_mgmt_event_callback net_shell_mgmt_cb;
 static K_SEM_DEFINE(wifi_ready_state_changed_sem, 0, 1);
 static bool wifi_ready_status;
 #endif /* CONFIG_WIFI_READY_LIB */
+
+static K_SEM_DEFINE(semaphore, 0, 1);
 
 static struct {
 	const struct shell *sh;
@@ -132,38 +141,73 @@ void mdns_result_cb(enum dns_resolve_status status,
 
 static void do_mdns_query(void)
 {
-	// static const char *mdns_query = "wifi-gateway.local";
-	char* mdns_query = malloc(strlen(CONFIG_MDNS_QUERY_NAME)+strlen(".local")+1);
-	strcpy(mdns_query, CONFIG_MDNS_QUERY_NAME);
-	strcat(mdns_query, ".local");
+	// // static const char *mdns_query = "wifi-gateway.local";
+	// char* mdns_query = malloc(strlen(CONFIG_MDNS_QUERY_NAME)+strlen(".local")+1);
+	// strcpy(mdns_query, CONFIG_MDNS_QUERY_NAME);
+	// strcat(mdns_query, ".local");
 
-	int ret;
+	// int ret;
 
-	LOG_WRN("Starting mDNS query for %s", mdns_query);
+	// LOG_WRN("Starting mDNS query for %s", mdns_query);
 
-	// Change the query type to DNS_QUERY_TYPE_AAAA for IPv6
-	ret = dns_get_addr_info(mdns_query,
-				DNS_QUERY_TYPE_A,
-				NULL,
-				mdns_result_cb,
-				(void *)mdns_query,
-				DNS_TIMEOUT);
-	if (ret < 0) {
-		LOG_ERR("Cannot resolve mDNS IPv4 address (%d)", ret);
-		return;
+	// // Change the query type to DNS_QUERY_TYPE_AAAA for IPv6
+	// ret = dns_get_addr_info(mdns_query,
+	// 			DNS_QUERY_TYPE_A,
+	// 			NULL,
+	// 			mdns_result_cb,
+	// 			(void *)mdns_query,
+	// 			DNS_TIMEOUT);
+	// if (ret < 0) {
+	// 	LOG_ERR("Cannot resolve mDNS IPv4 address (%d)", ret);
+	// 	return;
+	// }
+
+	// LOG_WRN("mDNS v4 query sent");
+
+
+	struct addrinfo *result;
+	struct addrinfo *addr;
+	struct addrinfo hints = {
+		.ai_socktype = SOCK_STREAM,
+		.ai_family = AF_INET
+	};
+
+	char addr_str[NET_IPV6_ADDR_LEN];
+
+	int err = getaddrinfo("krantoresolver", NULL, &hints, &result);
+	if (err) {
+		LOG_ERR("getaddrinfo() failed, error %d", err);
+		return -err;
 	}
 
-	LOG_WRN("mDNS v4 query sent");
+	for (addr = result; addr; addr = addr->ai_next) {
+		if (addr->ai_family == AF_INET) {
+			struct sockaddr_in *addr4 = (struct sockaddr_in *)addr->ai_addr;
+
+			inet_ntop(AF_INET, &addr4->sin_addr, addr_str, sizeof(addr_str));
+			LOG_INF("IPv4 address: %s", addr_str);
+		} else if (addr->ai_family == AF_INET6) {
+			struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)addr->ai_addr;
+
+			inet_ntop(AF_INET6, &addr6->sin6_addr, addr_str, sizeof(addr_str));
+			LOG_INF("IPv6 address: %s", addr_str);
+		}
+	}
+
+	LOG_INF("Got address info");
 
 }
 
 #endif /* CONFIG_MDNS_MODE_RESOLVER */
 static void button_handler(uint32_t button_state, uint32_t has_changed){
 	uint32_t buttons = button_state & has_changed;
+
 	if(buttons & DK_BTN1_MSK){
 		LOG_INF("Button 1 pressed");
 		#ifdef CONFIG_MDNS_MODE_RESOLVER
-		do_mdns_query();
+		
+		k_sem_give(&semaphore);
+
 		#endif
 	}
 	if(buttons & DK_BTN2_MSK){
@@ -505,9 +549,55 @@ static int register_wifi_ready(void)
 }
 #endif /* CONFIG_WIFI_READY_LIB */
 
+static int setup_server(int *sock, struct sockaddr *bind_addr, socklen_t bind_addrlen)
+{
+	int ret;
+	int enable = 1;
+
+	*sock = socket(bind_addr->sa_family, SOCK_STREAM, IPPROTO_TCP);
+	if (*sock < 0) {
+		LOG_ERR("Failed to create socket: %d", -errno);
+		return -errno;
+	}
+
+	// ret = setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+	// if (ret) {
+	// 	LOG_ERR("Failed to set SO_REUSEADDR %d", -errno);
+	// 	return -errno;
+	// }
+
+	ret = bind(*sock, bind_addr, bind_addrlen);
+	if (ret < 0) {
+		LOG_ERR("Failed to bind socket %d", -errno);
+		return -errno;
+	}
+
+	// ret = listen(*sock, 1);
+	// if (ret < 0) {
+	// 	LOG_ERR("Failed to listen on socket %d", -errno);
+	// 	return -errno;
+	// }
+
+	return ret;
+}
+
 int main(void)
 {
 	int ret = 0;
+
+	int socket;
+	struct sockaddr_in addr4 = {
+		.sin_family = AF_INET,
+		.sin_port = htons(80),
+	};
+
+	#ifdef CONFIG_MDNS_MODE_RESPONDER
+	ret = setup_server(&socket, (struct sockaddr *)&addr4, sizeof(addr4));
+	if (ret < 0) {
+		LOG_ERR("Failed to create IPv4 socket %d", ret);
+		return ret;
+	}
+	#endif /* CONFIG_MDNS_MODE_RESPONDER */
 
 	ret = dk_buttons_init(button_handler);
 
@@ -522,5 +612,20 @@ int main(void)
 #else
 	start_app();
 #endif /* CONFIG_WIFI_READY_LIB */
-	return ret;
+
+
+	#ifdef CONFIG_MDNS_MODE_RESOLVER
+	k_sem_take(&semaphore, K_FOREVER);
+
+	for (int i = 0; i < 1; i++) {
+		LOG_INF("Button 1 pressed");
+
+		do_mdns_query();
+
+		k_msleep(1000);
+	}
+	#endif /* CONFIG_MDNS_MODE_RESOLVER */
+	
+
+	return 0;
 }
