@@ -11,7 +11,6 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(sta, CONFIG_LOG_DEFAULT_LEVEL);
 
-#include <nrfx_clock.h>
 #include <zephyr/kernel.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,26 +22,21 @@ LOG_MODULE_REGISTER(sta, CONFIG_LOG_DEFAULT_LEVEL);
 #include <zephyr/net/wifi_mgmt.h>
 #include <zephyr/net/net_event.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/net/socket.h>
 
 #include <net/wifi_mgmt_ext.h>
 #include <net/wifi_ready.h>
 
-#include <qspi_if.h>
-
-#include "net_private.h"
-
 #include <dk_buttons_and_leds.h>
 
-#include <zephyr/net/dns_sd.h>
-
 #include <zephyr/net/dns_resolve.h>
-#ifdef CONFIG_MDNS_MODE_RESPONDER
-DNS_SD_REGISTER_TCP_SERVICE(krantore_sd, CONFIG_NET_HOSTNAME, "_http", "local",
-			    DNS_SD_EMPTY_TXT, 80);
-#endif /* CONFIG_MDNS_MODE_RESOLVER */
+#include <zephyr/net/socket.h>
 
-#define DNS_TIMEOUT (10 * MSEC_PER_SEC)
+#if defined(CONFIG_BOARD_NRF7002DK_NRF7001_NRF5340_CPUAPP) || \
+	defined(CONFIG_BOARD_NRF7002DK_NRF5340_CPUAPP)
+#include <qspi_if.h>
+#endif
+
+#include "net_private.h"
 
 #define WIFI_SHELL_MODULE "wifi"
 
@@ -53,10 +47,10 @@ DNS_SD_REGISTER_TCP_SERVICE(krantore_sd, CONFIG_NET_HOSTNAME, "_http", "local",
 #define STATUS_POLLING_MS   300
 
 /* 1000 msec = 1 sec */
-#define LED_SLEEP_TIME_MS   100
+#define LED_SLEEP_TIME_MS   250
 
 /* The devicetree node identifier for the "led0" alias. */
-#define LED0_NODE DT_ALIAS(led0)
+#define LED0_NODE DT_ALIAS(led1)
 /*
  * A build error on this line means your board is unsupported.
  * See the sample documentation for information on how to fix this.
@@ -70,8 +64,6 @@ static struct net_mgmt_event_callback net_shell_mgmt_cb;
 static K_SEM_DEFINE(wifi_ready_state_changed_sem, 0, 1);
 static bool wifi_ready_status;
 #endif /* CONFIG_WIFI_READY_LIB */
-
-static K_SEM_DEFINE(semaphore, 0, 1);
 
 static struct {
 	const struct shell *sh;
@@ -87,84 +79,7 @@ static struct {
 } context;
 
 #ifdef CONFIG_MDNS_MODE_RESOLVER
-void mdns_result_cb(enum dns_resolve_status status,
-				struct dns_addrinfo *info,
-				void *user_data) {
-
-	char hr_addr[NET_IPV6_ADDR_LEN];
-	char *hr_family;
-	void *addr;
-
-	LOG_WRN("mDNS resolving status: %d", status);
-	switch (status) {
-	case DNS_EAI_CANCELED:
-		LOG_WRN("DNS query canceled");
-		break;
-	case DNS_EAI_FAIL:
-		LOG_WRN("DNS query failed");
-		break;
-	case DNS_EAI_NODATA:
-		LOG_WRN("DNS query returned no data");
-		break;
-	case DNS_EAI_ALLDONE:
-		LOG_INF("DNS query completed");
-		break;
-	case DNS_EAI_INPROGRESS:
-		LOG_INF("DNS query in progress");
-		break;
-	default:
-		LOG_INF("mDNS resolving error: %d", status);
-		return;
-	}
-
-	if(!info) {
-		LOG_WRN("No info");
-		return;
-	}
-
-	if (info->ai_family == AF_INET) {
-		hr_family = "IPv4";
-		addr = &net_sin(&info->ai_addr)->sin_addr;
-	} else if (info->ai_family == AF_INET6) {
-		hr_family = "IPv6";
-		addr = &net_sin6(&info->ai_addr)->sin6_addr;
-	} else {
-		LOG_ERR("Invalid IP address family %d", info->ai_family);
-		return;
-	}
-
-	LOG_INF("%s %s address: %s", user_data ? (char *)user_data : "<null>",
-		hr_family,
-		net_addr_ntop(info->ai_family, addr,
-					 hr_addr, sizeof(hr_addr)));
-}
-
-static void do_mdns_query(void)
-{
-	// // static const char *mdns_query = "wifi-gateway.local";
-	// char* mdns_query = malloc(strlen(CONFIG_MDNS_QUERY_NAME)+strlen(".local")+1);
-	// strcpy(mdns_query, CONFIG_MDNS_QUERY_NAME);
-	// strcat(mdns_query, ".local");
-
-	// int ret;
-
-	// LOG_WRN("Starting mDNS query for %s", mdns_query);
-
-	// // Change the query type to DNS_QUERY_TYPE_AAAA for IPv6
-	// ret = dns_get_addr_info(mdns_query,
-	// 			DNS_QUERY_TYPE_A,
-	// 			NULL,
-	// 			mdns_result_cb,
-	// 			(void *)mdns_query,
-	// 			DNS_TIMEOUT);
-	// if (ret < 0) {
-	// 	LOG_ERR("Cannot resolve mDNS IPv4 address (%d)", ret);
-	// 	return;
-	// }
-
-	// LOG_WRN("mDNS v4 query sent");
-
-
+static void do_mdns_query(void){
 	struct addrinfo *result;
 	struct addrinfo *addr;
 	struct addrinfo hints = {
@@ -174,10 +89,21 @@ static void do_mdns_query(void)
 
 	char addr_str[NET_IPV6_ADDR_LEN];
 
-	int err = getaddrinfo("krantoresolver", NULL, &hints, &result);
-	if (err) {
+	int err;
+	for(int i = 0; i < 5; i++){
+		err = getaddrinfo(CONFIG_MDNS_QUERY_NAME, NULL, &hints, &result);
+		// if (err) {
+		// 	LOG_ERR("getaddrinfo() failed, error %d", err);
+		// 	return;
+		// }
+		if(!err){
+			LOG_INF("Got address at attempt %d", i);
+			break;
+		}
+	}
+	if(err){
 		LOG_ERR("getaddrinfo() failed, error %d", err);
-		return -err;
+		return;
 	}
 
 	for (addr = result; addr; addr = addr->ai_next) {
@@ -193,12 +119,9 @@ static void do_mdns_query(void)
 			LOG_INF("IPv6 address: %s", addr_str);
 		}
 	}
-
-	LOG_INF("Got address info");
-
 }
-
 #endif /* CONFIG_MDNS_MODE_RESOLVER */
+
 static void button_handler(uint32_t button_state, uint32_t has_changed){
 	uint32_t buttons = button_state & has_changed;
 
@@ -206,7 +129,8 @@ static void button_handler(uint32_t button_state, uint32_t has_changed){
 		LOG_INF("Button 1 pressed");
 		#ifdef CONFIG_MDNS_MODE_RESOLVER
 		
-		k_sem_give(&semaphore);
+		LOG_WRN("mDNS Resolver");
+		do_mdns_query();
 
 		#endif
 	}
@@ -407,11 +331,11 @@ int start_app(void)
 {
 #if defined(CONFIG_BOARD_NRF7002DK_NRF7001_NRF5340_CPUAPP) || \
 	defined(CONFIG_BOARD_NRF7002DK_NRF5340_CPUAPP)
-	if (strlen(CONFIG_NRF700X_QSPI_ENCRYPTION_KEY)) {
+	if (strlen(CONFIG_NRF70_QSPI_ENCRYPTION_KEY)) {
 		int ret;
 		char key[QSPI_KEY_LEN_BYTES];
 
-		ret = bytes_from_str(CONFIG_NRF700X_QSPI_ENCRYPTION_KEY, key, sizeof(key));
+		ret = bytes_from_str(CONFIG_NRF70_QSPI_ENCRYPTION_KEY, key, sizeof(key));
 		if (ret) {
 			LOG_ERR("Failed to parse encryption key: %d\n", ret);
 			return 0;
@@ -549,57 +473,21 @@ static int register_wifi_ready(void)
 }
 #endif /* CONFIG_WIFI_READY_LIB */
 
-static int setup_server(int *sock, struct sockaddr *bind_addr, socklen_t bind_addrlen)
-{
-	int ret;
-	int enable = 1;
-
-	*sock = socket(bind_addr->sa_family, SOCK_STREAM, IPPROTO_TCP);
-	if (*sock < 0) {
-		LOG_ERR("Failed to create socket: %d", -errno);
-		return -errno;
-	}
-
-	// ret = setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-	// if (ret) {
-	// 	LOG_ERR("Failed to set SO_REUSEADDR %d", -errno);
-	// 	return -errno;
-	// }
-
-	ret = bind(*sock, bind_addr, bind_addrlen);
-	if (ret < 0) {
-		LOG_ERR("Failed to bind socket %d", -errno);
-		return -errno;
-	}
-
-	// ret = listen(*sock, 1);
-	// if (ret < 0) {
-	// 	LOG_ERR("Failed to listen on socket %d", -errno);
-	// 	return -errno;
-	// }
-
-	return ret;
-}
-
 int main(void)
 {
 	int ret = 0;
 
-	int socket;
-	struct sockaddr_in addr4 = {
-		.sin_family = AF_INET,
-		.sin_port = htons(80),
-	};
-
-	#ifdef CONFIG_MDNS_MODE_RESPONDER
-	ret = setup_server(&socket, (struct sockaddr *)&addr4, sizeof(addr4));
-	if (ret < 0) {
-		LOG_ERR("Failed to create IPv4 socket %d", ret);
-		return ret;
-	}
-	#endif /* CONFIG_MDNS_MODE_RESPONDER */
+	#ifdef CONFIG_MDNS_MODE_RESOLVER
+		LOG_WRN("Starting mDNS resolver sample");
+	#else
+		LOG_WRN("Starting mDNS responder sample");
+	#endif
 
 	ret = dk_buttons_init(button_handler);
+	if(ret){
+		LOG_ERR("Failed to initialize buttons");
+		return ret;
+	}
 
 	net_mgmt_callback_init();
 
@@ -612,20 +500,5 @@ int main(void)
 #else
 	start_app();
 #endif /* CONFIG_WIFI_READY_LIB */
-
-
-	#ifdef CONFIG_MDNS_MODE_RESOLVER
-	k_sem_take(&semaphore, K_FOREVER);
-
-	for (int i = 0; i < 1; i++) {
-		LOG_INF("Button 1 pressed");
-
-		do_mdns_query();
-
-		k_msleep(1000);
-	}
-	#endif /* CONFIG_MDNS_MODE_RESOLVER */
-	
-
-	return 0;
+	return ret;
 }

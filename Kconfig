@@ -9,14 +9,9 @@ source "Kconfig.zephyr"
 menu "mDNS Configuration"
 	choice MDNS_MODE
 		prompt "mDNS mode"
-		default MDNS_MODE_DISABLED
+		default MDNS_MODE_RESPONDER
 		help
 			Select the mDNS mode
-
-	config MDNS_MODE_DISABLED
-		bool "Disabled"
-		help
-			mDNS is disabled
 
 	config MDNS_MODE_RESPONDER
 		bool "Responder"
@@ -32,9 +27,28 @@ menu "mDNS Configuration"
 
 	config MDNS_QUERY_NAME
 		string "mDNS query name"
-		default "Responder"
+		default "zephyr"
 		help
 			Set the mDNS query name
+
+	# config MDNS_RESPONDER_HOSTNAME
+	# 	string "mDNS query name"
+	# 	default "mDNS-Responder"
+	# 	help
+	# 		Set the mDNS query name
+
+	# config MDNS_RESOLVER_HOSTNAME
+	# 	string "mDNS query name"
+	# 	default "mDNS-Resolver"
+	# 	help
+	# 		Set the mDNS query name
+
+	# config NET_HOSTNAME
+	# 	string 
+	# 	default MDNS_RESPONDER_HOSTNAME if MDNS_MODE_RESPONDER
+	# 	default MDNS_RESOLVER_HOSTNAME if MDNS_MODE_RESOLVER
+	# 	help
+	# 		Set the hostname
 
 endmenu # mDNS Configuration
 
@@ -44,7 +58,7 @@ config CONNECTION_IDLE_TIMEOUT
 	int "Time to be waited for a station to connect"
 	default 30
 
-config NRF700X_QSPI_ENCRYPTION_KEY
+config NRF70_QSPI_ENCRYPTION_KEY
 	string "16 bytes QSPI encryption key, only for testing purposes"
 	depends on BOARD_NRF7002DK_NRF5340_CPUAPP
 	help
