@@ -7,18 +7,14 @@ After flashing the devices, the devices should be connected to the same network.
 ### Responder
 The device responding to local mndns queries. 
 ```
-west build -p -b nrf5340_audio_dk/nrf5340/cpuapp -d build_responder --sysbuild -- -DSHIELD=nrf7002ek  -DEXTRA_CONF_FILE="overlay-responder.conf"
-
-west flash -d build_responder
+west build -p -b nrf5340_audio_dk/nrf5340/cpuapp -d build_responder --sysbuild -- -DSHIELD=nrf7002ek  -DEXTRA_CONF_FILE="overlay-responder.conf" && west flash -d build_responder
 ```
 
 
 ### Resolver
 The device 
 ```
-west build -p -b nrf5340_audio_dk/nrf5340/cpuapp -d build_resolver --sysbuild -- -DSHIELD=nrf7002ek  -DEXTRA_CONF_FILE="overlay-resolver.conf"
-
-west flash -d build_resolver
+west build -p -b nrf5340_audio_dk/nrf5340/cpuapp -d build_resolver --sysbuild -- -DSHIELD=nrf7002ek  -DEXTRA_CONF_FILE="overlay-resolver.conf" && west flash -d build_resolver
 ```
 
 ## TODO
